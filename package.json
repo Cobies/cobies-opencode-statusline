@@ -1,0 +1,58 @@
+{
+  "name": "cobies-opencode-statusline",
+  "version": "0.4.0",
+  "description": "Cobies statusline plugin for OpenCode with pragmatic hexagonal architecture",
+  "type": "module",
+  "packageManager": "bun@1.3.13",
+  "main": "./dist/runtime.js",
+  "types": "./dist/runtime.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js"
+    },
+    "./tui": {
+      "types": "./dist/tui.d.ts",
+      "import": "./dist/tui.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js"
+    }
+  },
+  "files": [
+    "dist",
+    "assets",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "prepack": "bun run build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev": "tsup --watch"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "statusline",
+    "subagent",
+    "hexagonal"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*",
+    "@opentui/core": "*",
+    "@opentui/solid": "*",
+    "solid-js": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "bun-types": "^1.3.13",
+    "esbuild-plugin-solid": "^0.6.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.8.3",
+    "vitest": "^3.0.0"
+  }
+}

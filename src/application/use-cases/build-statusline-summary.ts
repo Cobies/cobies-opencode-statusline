@@ -1,0 +1,152 @@
+// Application — Build statusline summary
+
+import type { StatuslineState, ChildSessionState } from "../../domain/entities/statusline-state.js";
+
+export interface StatuslineSummary {
+  running: number;
+  done: number;
+  error: number;
+  total: number;
+  details: string;
+}
+
+function formatDuration(elapsedMs: number | undefined): string {
+  const totalSeconds = Math.max(0, Math.floor((elapsedMs ?? 0) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function resolveTokenTotal(child: ChildSessionState): number | undefined {
+  const total = child.tokens?.total;
+  if (typeof total === "number" && Number.isFinite(total)) {
+    return total;
+  }
+  const inTokens = child.tokens?.input;
+  const outTokens = child.tokens?.output;
+  if (typeof inTokens === "number" || typeof outTokens === "number") {
+    return (inTokens ?? 0) + (outTokens ?? 0);
+  }
+  return undefined;
+}
+
+function formatPercentUsed(percent: number): string {
+  const rounded = Math.round(percent * 10) / 10;
+  if (Math.abs(rounded - Math.round(rounded)) < 0.05) {
+    return `${Math.round(rounded)}% used`;
+  }
+  return `${rounded.toFixed(1)}% used`;
+}
+
+function formatTokenCount(total: number): string {
+  const label = total === 1 ? "token" : "tokens";
+  return `${Math.max(0, Math.round(total)).toLocaleString("en-US")} ${label}`;
+}
+
+function formatCompactTokenCount(total: number): string {
+  const value = Math.max(0, total);
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(1)}M tok`;
+  }
+  if (value >= 1_000) {
+    return `${(value / 1_000).toFixed(1)}k tok`;
+  }
+  return `${Math.round(value)} tok`;
+}
+
+function formatCompactPercentUsed(percent: number): string {
+  return `${Math.max(0, Math.round(percent))}%`;
+}
+
+function formatContext(child: ChildSessionState): string {
+  const total = resolveTokenTotal(child);
+  const percent = child.tokens?.contextPercent;
+
+  const hasPercent = typeof percent === "number" && Number.isFinite(percent);
+  const hasTotal = typeof total === "number" && Number.isFinite(total);
+
+  if (hasTotal && hasPercent) {
+    return `ctx ${formatTokenCount(total)} · ${formatPercentUsed(percent)}`;
+  }
+  if (hasTotal) return `ctx ${formatTokenCount(total)}`;
+  if (hasPercent) return `ctx ${formatPercentUsed(percent)}`;
+  return "";
+}
+
+function childColor(child: ChildSessionState): string {
+  if (child.color === "green") return "\u001B[32m";
+  if (child.color === "red") return "\u001B[31m";
+  return "\u001B[33m";
+}
+
+function colorsEnabled(): boolean {
+  if (process.env.NO_COLOR) return false;
+  const fromEnv = process.env.OPENCODE_SUBAGENT_STATUSLINE_COLOR;
+  if (fromEnv === "0") return false;
+  return true;
+}
+
+function paint(text: string, color: string, enabled: boolean): string {
+  if (!enabled) return text;
+  return `${color}${text}\u001B[0m`;
+}
+
+function byPriority(a: ChildSessionState, b: ChildSessionState): number {
+  const rank = (status: ChildSessionState["status"]): number => {
+    if (status === "running") return 0;
+    if (status === "error") return 1;
+    return 2;
+  };
+  const diff = rank(a.status) - rank(b.status);
+  if (diff !== 0) return diff;
+  return b.updatedAt.localeCompare(a.updatedAt);
+}
+
+export function buildStatuslineSummary(state: StatuslineState): StatuslineSummary {
+  const allChildren = Object.values(state.children);
+  const hasMatchingSubtask = (child: ChildSessionState): boolean =>
+    child.source === "tool" &&
+    allChildren.some(
+      (candidate) =>
+        candidate.source === "subtask" &&
+        candidate.parentID === child.parentID &&
+        candidate.messageID === child.messageID,
+    );
+
+  const children = allChildren.filter((child) => !hasMatchingSubtask(child)).sort(byPriority);
+  const running = children.filter((c) => c.status === "running").length;
+  const done = children.filter((c) => c.status === "done").length;
+  const error = children.filter((c) => c.status === "error").length;
+  const colorOn = colorsEnabled();
+
+  const aggregate = `↳ ${running} running · ${done} done · ${error} error`;
+  if (children.length === 0) {
+    return { running, done, error, total: 0, details: aggregate };
+  }
+
+  const childTexts = children.map((child) => {
+    const context = formatContext(child);
+    const label = [child.title, formatDuration(child.elapsedMs), context]
+      .filter((part) => part.length > 0)
+      .join(" ");
+    return paint(label, childColor(child), colorOn);
+  });
+
+  const details = childTexts.join(paint(" · ", "\u001B[90m", colorOn));
+  return {
+    running,
+    done,
+    error,
+    total: children.length,
+    details: `${aggregate} · ${details}`,
+  };
+}
+
+export function renderStatusLine(state: StatuslineState): string {
+  return buildStatuslineSummary(state).details;
+}
