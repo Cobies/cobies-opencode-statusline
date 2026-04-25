@@ -12,16 +12,16 @@ import type { Accessor } from "solid-js";
 import { mapOpenCodeEventToSubagentEvent } from "../../opencode/opencode-event-mapper.js";
 import { processSubagentEvent } from "../../../application/use-cases/process-subagent-event.js";
 import {
-  createTuiViewModel,
   formatChildRowLine,
-  elapsedMs,
-  formatTimestamp,
   formatTokenDetail,
-  formatDuration,
+  compactModelName,
+  createTuiViewModel,
+  buildHierarchy,
   type FormattedChildRow,
   type ChildDetail,
+  type HierarchyNode,
 } from "./tui-view-model.js";
-import type { ChildSessionState, StatuslineState, StatusCounts, ChildStatus } from "../../../domain/entities/statusline-state.js";
+import type { ChildSessionState, StatuslineState, StatusCounts } from "../../../domain/entities/statusline-state.js";
 import { cloneState } from "./tui-clone.js";
 import { hydrateTokensFromTuiState } from "./tui-token-hydration.js";
 import { hydratePreviousSubagents } from "./tui-hydration.js";
@@ -31,8 +31,6 @@ const TUI_PLUGIN_ID = "subagent-statusline.tui";
 const ELAPSED_TICK_MS = 1000;
 const SUBAGENTS_EXPANDED_KV_KEY = "subagents.sidebar.expanded";
 const SUBAGENTS_SECTION_ENABLED_KV_KEY = "subagents.sidebar.enabled";
-const FOCUS_MODE_KEY = "subagents.sidebar.focusMode";
-const STATUS_FILTERS_KEY = "subagents.sidebar.statusFilters";
 
 type SidebarContentContext = TuiSlotContext & { session_id?: string };
 type HomeBottomContext = TuiSlotContext;
@@ -40,10 +38,10 @@ type HomeBottomContext = TuiSlotContext;
 const CLOCK_ICON = "";
 const TOKEN_ICON = "";
 const MODEL_ICON = "";
-const SELECT_ICON = "◉";
-const BLOCK_ICON = "⊘";
-const STOP_ICON = "⊠";
-const CLEAR_ICON = "✕";
+const SOURCE_ICON = "☁";
+const STATUS_ICON = "●";
+const ERROR_ICON = "⏍";
+const EVENT_ICON = "▸";
 
 function statusIcon(status: ChildSessionState["status"], uiControl?: string): string {
   if (uiControl === "stopped") return "■";
@@ -69,21 +67,15 @@ function statusColor(
   return theme.warning.toString();
 }
 
-function selectionMarker(isSelected: boolean, isFocused: boolean): string {
-  if (isFocused) return "▶";
-  if (isSelected) return "○";
-  return "";
-}
-
 interface ChildRowProps {
   node: HierarchyNode;
-  nowMs: Accessor<number>;
-  sidebarWidth: Accessor<number | undefined>;
+  nowMs: () => number;
+  sidebarWidth: () => number | undefined;
   theme: TuiThemeCurrent;
-  isSelected: boolean;
   isFocused: boolean;
-  onSelect: (id: string) => void;
   onFocus: (id: string) => void;
+  detail?: Accessor<ChildDetail | undefined>;
+  onClose?: () => void;
 }
 
 function ChildRow(props: ChildRowProps) {
@@ -92,28 +84,26 @@ function ChildRow(props: ChildRowProps) {
       props.node.child,
       props.nowMs(),
       props.sidebarWidth(),
-      props.isSelected,
+      false,
       props.isFocused,
     );
 
   const depth = () => props.node.depth;
   const indent = () => (depth() > 0 ? "  ".repeat(depth()) : "");
+  const detail = (): ChildDetail | undefined => props.detail?.();
 
   return (
     <box flexDirection="column">
       <box
         flexDirection="row"
-        onMouseDown={() => {
-          props.onSelect(props.node.child.id);
-          props.onFocus(props.node.child.id);
-        }}
+        onMouseDown={() => props.onFocus(props.node.child.id)}
       >
         <text fg={props.theme.textMuted}>{indent()}</text>
         <text fg={statusColor(line().status, props.theme, line().uiControl)}>
           {statusIcon(line().status, line().uiControl)}
         </text>
-        <Show when={props.isSelected || props.isFocused}>
-          <text fg={props.theme.accent}>{selectionMarker(props.isSelected, props.isFocused)}</text>
+        <Show when={props.isFocused}>
+          <text fg={props.theme.accent} selectable={false}>▶</text>
         </Show>
         <text fg={props.theme.text}>{` ${line().label}`}</text>
         <Show when={props.node.child.uiControl}>
@@ -137,6 +127,18 @@ function ChildRow(props: ChildRowProps) {
           <text fg={props.theme.textMuted}> [{props.node.child.source}]</text>
         </Show>
       </box>
+
+      {/* Inline focused detail — appears directly below the focused row */}
+      <Show when={props.isFocused && detail()}>
+        {(d: Accessor<ChildDetail>) => (
+          <InlineDetailRow
+            detail={d()}
+            theme={props.theme}
+            depth={depth()}
+            onClose={props.onClose}
+          />
+        )}
+      </Show>
     </box>
   );
 }
@@ -173,157 +175,6 @@ function AggregateBar(props: AggregateBarProps) {
   );
 }
 
-interface ActionBarProps {
-  theme: TuiThemeCurrent;
-  hasSelection: Accessor<boolean>;
-  onBlock: () => void;
-  onStop: () => void;
-  onClear: () => void;
-  onClearSelection: () => void;
-}
-
-function ActionBar(props: ActionBarProps) {
-  return (
-    <box flexDirection="row" paddingTop={1} paddingBottom={1}>
-      <Show when={props.hasSelection()}>
-        <text
-          fg={props.theme.textMuted}
-          onMouseDown={props.onBlock}
-        >{`${BLOCK_ICON} block`}</text>
-        <text fg={props.theme.textMuted}> · </text>
-        <text
-          fg={props.theme.error}
-          onMouseDown={props.onStop}
-        >{`${STOP_ICON} stop`}</text>
-        <text fg={props.theme.textMuted}> · </text>
-        <text
-          fg={props.theme.textMuted}
-          onMouseDown={props.onClearSelection}
-        >{`${CLEAR_ICON} deselect`}</text>
-        <Show when={props.hasSelection()}>
-          <text fg={props.theme.textMuted}> · </text>
-          <text
-            fg={props.theme.textMuted}
-            onMouseDown={props.onClear}
-          >`${CLEAR_ICON} clear control`</text>
-        </Show>
-      </Show>
-    </box>
-  );
-}
-
-interface DetailPanelProps {
-  detail: Accessor<ChildDetail | undefined>;
-  theme: TuiThemeCurrent;
-  nowMs: Accessor<number>;
-}
-
-function DetailPanel(props: DetailPanelProps) {
-  const d = () => props.detail();
-
-  return (
-    <Show when={d()}>
-      {(detail: () => ChildDetail) => (
-        <box flexDirection="column" paddingTop={1} borderColor={props.theme.border.toString()}>
-          <text fg={props.theme.text.toString()}>{`▶ ${detail().title}`}</text>
-
-          <box flexDirection="row" paddingLeft={2}>
-            <text fg={props.theme.textMuted}>id: </text>
-            <text fg={props.theme.text}>{detail().id}</text>
-          </box>
-          <box flexDirection="row" paddingLeft={2}>
-            <text fg={props.theme.textMuted}>parentID: </text>
-            <text fg={props.theme.text}>{detail().parentID}</text>
-          </box>
-          <box flexDirection="row" paddingLeft={2}>
-            <text fg={props.theme.textMuted}>status: </text>
-            <text fg={statusColor(detail().status as any, props.theme, detail().uiControl as any)}>
-              {detail().status}{detail().uiControl ? ` [${detail().uiControl}]` : ""}
-            </text>
-          </box>
-          <box flexDirection="row" paddingLeft={2}>
-            <text fg={props.theme.textMuted}>source: </text>
-            <text fg={props.theme.text}>{detail().source}</text>
-          </box>
-          <Show when={detail().model}>
-            <box flexDirection="row" paddingLeft={2}>
-              <text fg={props.theme.textMuted}>model: </text>
-              <text fg={props.theme.text}>{detail().model}</text>
-            </box>
-          </Show>
-          <box flexDirection="row" paddingLeft={2}>
-            <text fg={props.theme.textMuted}>elapsed: </text>
-            <text fg={props.theme.text}>{detail().elapsed}</text>
-          </box>
-          <box flexDirection="row" paddingLeft={2}>
-            <text fg={props.theme.textMuted}>started: </text>
-            <text fg={props.theme.text}>{formatTimestamp(detail().startedAt)}</text>
-          </box>
-          <box flexDirection="row" paddingLeft={2}>
-            <text fg={props.theme.textMuted}>updated: </text>
-            <text fg={props.theme.text}>{formatTimestamp(detail().updatedAt)}</text>
-          </box>
-          <Show when={detail().endedAt}>
-            <box flexDirection="row" paddingLeft={2}>
-              <text fg={props.theme.textMuted}>ended: </text>
-              <text fg={props.theme.text}>{formatTimestamp(detail().endedAt!)}</text>
-            </box>
-          </Show>
-          <Show when={detail().tokens}>
-            <box flexDirection="row" paddingLeft={2}>
-              <text fg={props.theme.textMuted}>tokens: </text>
-              <text fg={props.theme.text}>{formatTokenDetail(detail().tokens)}</text>
-            </box>
-          </Show>
-          <Show when={detail().summary}>
-            <box flexDirection="row" paddingLeft={2}>
-              <text fg={props.theme.textMuted}>summary: </text>
-              <text fg={props.theme.text}>{detail().summary}</text>
-            </box>
-          </Show>
-          <Show when={detail().errorDetail}>
-            <box flexDirection="row" paddingLeft={2}>
-              <text fg={props.theme.textMuted}>error: </text>
-              <text fg={props.theme.error ?? props.theme.text}>{detail().errorDetail}</text>
-            </box>
-          </Show>
-          <Show when={detail().status === "stopped" && !detail().errorDetail}>
-            <box flexDirection="row" paddingLeft={2}>
-              <text fg={props.theme.textMuted}>stop reason: </text>
-              <text fg={props.theme.warning}>stopped from TUI control</text>
-            </box>
-          </Show>
-
-          <Show when={detail().lastEvent}>
-            <box flexDirection="row" paddingLeft={2}>
-              <text fg={props.theme.textMuted}>last event: </text>
-              <text fg={props.theme.text}>
-                [{formatTimestamp(detail().lastEvent!.timestamp)}] {detail().lastEvent!.type}
-                {detail().lastEvent!.detail ? ` — ${detail().lastEvent!.detail}` : ""}
-              </text>
-            </box>
-          </Show>
-
-          <Show when={detail().eventLog.length > 0}>
-            <text fg={props.theme.text.toString()} paddingTop={1}>timeline</text>
-            <For each={[...detail().eventLog].reverse().slice(0, 10)}>
-              {(entry) => (
-                <box flexDirection="row" paddingLeft={2}>
-                  <text fg={props.theme.textMuted}>[{formatTimestamp(entry.timestamp)}]</text>
-                  <text fg={props.theme.text}> {entry.type}</text>
-                  <Show when={entry.detail}>
-                    <text fg={props.theme.textMuted}> {entry.detail}</text>
-                  </Show>
-                </box>
-              )}
-            </For>
-          </Show>
-        </box>
-      )}
-    </Show>
-  );
-}
-
 function SidebarSubagents(props: {
   sessionID: string;
   state: Accessor<StatuslineState>;
@@ -332,27 +183,30 @@ function SidebarSubagents(props: {
   onToggleExpanded: () => void;
   sidebarWidth: Accessor<number | undefined>;
   theme: TuiThemeCurrent;
-  focusMode: Accessor<boolean>;
-  onToggleFocusMode: () => void;
-  statusFilters: Accessor<Set<ChildStatus>>;
-  onStatusFiltersChange: (filters: Set<ChildStatus>) => void;
+  focusedId: Accessor<string | undefined>;
+  selectOnly: (id: string) => void;
+  clearSelection: () => void;
+  focusedDetail: () => ChildDetail | undefined;
 }) {
-  const vm = createTuiViewModel(props.state, props.nowMs, true, props.statusFilters());
-  vm.setStatusFiltersChangeCallback(props.onStatusFiltersChange);
-
   const counts = createMemo(() => {
     const c = getCounts(props.state());
     return c;
   });
 
   const children = (): ChildSessionState[] => {
-    return collapseToolWrappers(
-      Object.values(props.state().children),
-    ).sort(byPriority);
+    return Object.values(props.state().children).sort(byPriority);
   };
 
   const hierarchy = (): HierarchyNode[] => {
     return buildHierarchy(children(), props.sessionID);
+  };
+
+  const handleFocus = (id: string): void => {
+    if (props.focusedId() === id) {
+      props.clearSelection();
+    } else {
+      props.selectOnly(id);
+    }
   };
 
   return (
@@ -363,58 +217,27 @@ function SidebarSubagents(props: {
           selectable={false}
           onMouseDown={props.onToggleExpanded}
         >{`${props.expanded() ? "▾" : "▸"} Subagents`}</text>
-        <text fg={props.theme.textMuted}> </text>
-        <For each={["running", "done", "error", "blocked", "waiting", "stopped"] as ChildStatus[]}>
-          {(status) => (
-            <text
-              fg={vm.statusFilters().has(status) ? props.theme.accent : props.theme.textMuted}
-              selectable={false}
-              onMouseDown={() => vm.toggleStatusFilter(status)}
-            >[{status}]</text>
-          )}
-        </For>
-        <text fg={props.theme.textMuted}> </text>
-        <text
-          fg={props.focusMode() ? props.theme.accent : props.theme.textMuted}
-          selectable={false}
-          onMouseDown={props.onToggleFocusMode}
-        >[focus]</text>
       </box>
       <AggregateBar counts={counts} theme={props.theme} />
-      <ActionBar
-        theme={props.theme}
-        hasSelection={() => vm.selectedIds().size > 0}
-        onBlock={vm.blockSelected}
-        onStop={vm.stopSelected}
-        onClear={vm.clearControls}
-        onClearSelection={vm.clearSelection}
-      />
 
       <Show when={props.expanded()}>
         <box flexDirection="column">
-          <Show when={props.focusMode() && vm.focusedId()}>
-            <DetailPanel
-              detail={vm.focusedDetail}
-              theme={props.theme}
-              nowMs={props.nowMs}
-            />
-          </Show>
-          <For each={vm.filteredChildHierarchy()}>
+          <For each={hierarchy()}>
             {(node: HierarchyNode) => (
               <ChildRow
                 node={node}
                 nowMs={props.nowMs}
                 sidebarWidth={props.sidebarWidth}
                 theme={props.theme}
-                isSelected={vm.selectedIds().has(node.child.id)}
-                isFocused={vm.focusedId() === node.child.id}
-                onSelect={vm.toggleSelect}
-                onFocus={vm.selectOnly}
+                isFocused={props.focusedId() === node.child.id}
+                onFocus={handleFocus}
+                detail={props.focusedDetail}
+                onClose={props.clearSelection}
               />
             )}
           </For>
 
-          <Show when={children().length === 0}>
+          <Show when={hierarchy().length === 0}>
             <text fg={props.theme.textMuted}>no subagents</text>
           </Show>
         </box>
@@ -462,25 +285,6 @@ function HomeBottomStatus(props: {
   );
 }
 
-// Helper imports for SidebarSubagents
-function collapseToolWrappers(children: ChildSessionState[]): ChildSessionState[] {
-  const realChildren = children.filter((child) => child.source !== "tool");
-  return children.filter((child) => {
-    if (child.source !== "tool") return true;
-    if (
-      child.source === "tool" &&
-      realChildren.some((real) => real.parentID === child.parentID)
-    ) {
-      return false;
-    }
-    return !realChildren.some(
-      (real) =>
-        real.parentID === child.parentID &&
-        real.title.toLowerCase().includes(child.title.toLowerCase()),
-    );
-  });
-}
-
 function byPriority(a: ChildSessionState, b: ChildSessionState): number {
   const rank = (status: ChildSessionState["status"]): number => {
     switch (status) {
@@ -513,49 +317,57 @@ function getCounts(state: StatuslineState): StatusCounts {
   return counts;
 }
 
-interface HierarchyNode {
-  child: ChildSessionState;
+interface InlineDetailRowProps {
+  detail: ChildDetail;
+  theme: TuiThemeCurrent;
   depth: number;
-  isOrphan: boolean;
-  hasChildren: boolean;
+  onClose?: () => void;
 }
 
-function buildHierarchy(children: ChildSessionState[], sessionID: string): HierarchyNode[] {
-  const result: HierarchyNode[] = [];
-  const childMap = new Map<string, ChildSessionState[]>();
+/** Compact inline detail rendered directly below the focused row */
+function InlineDetailRow(props: InlineDetailRowProps) {
+  const d = () => props.detail;
+  const indent = () => "  ".repeat(props.depth + 1);
 
-  for (const child of children) {
-    const parent = child.parentID;
-    if (!childMap.has(parent)) childMap.set(parent, []);
-    childMap.get(parent)!.push(child);
-  }
-
-  function traverse(parentID: string, depth: number): void {
-    const kids = childMap.get(parentID) ?? [];
-    const sorted = [...kids].sort(byPriority);
-    for (const child of sorted) {
-      const hasChildren = childMap.has(child.id);
-      result.push({ child, depth, isOrphan: false, hasChildren });
-      if (hasChildren) traverse(child.id, depth + 1);
-    }
-  }
-
-  const direct = childMap.get(sessionID) ?? [];
-  const directSorted = [...direct].sort(byPriority);
-  for (const child of directSorted) {
-    const hasChildren = childMap.has(child.id);
-    result.push({ child, depth: 0, isOrphan: false, hasChildren });
-    if (hasChildren) traverse(child.id, 1);
-  }
-
-  const knownIds = new Set(result.map((n) => n.child.id));
-  for (const child of children) {
-    if (!knownIds.has(child.id) && childMap.has(child.id)) {
-      result.push({ child, depth: 1, isOrphan: true, hasChildren: childMap.has(child.id) });
-    }
-  }
-
-  return result;
+  return (
+    <box flexDirection="column" paddingLeft={2 + props.depth * 2}>
+      <box flexDirection="row">
+        <text fg={props.theme.textMuted} selectable={false}>{indent()}{STATUS_ICON} </text>
+        <text fg={props.theme.text} selectable={false}>{d().status}</text>
+        <text fg={props.theme.textMuted} selectable={false}> · </text>
+        <text fg={props.theme.textMuted} selectable={false}>{SOURCE_ICON} {d().source}</text>
+        {d().model && (
+          <>
+            <text fg={props.theme.textMuted} selectable={false}> · </text>
+            <text fg={props.theme.accent} selectable={false}>{MODEL_ICON} {compactModelName(d().model)}</text>
+          </>
+        )}
+        {d().tokens && (
+          <>
+            <text fg={props.theme.textMuted} selectable={false}> · </text>
+            <text fg={props.theme.textMuted} selectable={false}>{TOKEN_ICON} {formatTokenDetail(d().tokens)}</text>
+          </>
+        )}
+        <text fg={props.theme.textMuted} selectable={false}> · </text>
+        <text fg={props.theme.textMuted} selectable={false}>{CLOCK_ICON} {d().elapsed}</text>
+        {d().errorDetail && (
+          <>
+            <text fg={props.theme.textMuted} selectable={false}> · </text>
+            <text fg={props.theme.error} selectable={false}>{ERROR_ICON} {d().errorDetail}</text>
+          </>
+        )}
+        {d().lastEvent && (
+          <>
+            <text fg={props.theme.textMuted} selectable={false}> · </text>
+            <text fg={props.theme.textMuted} selectable={false}>{EVENT_ICON} {d().lastEvent?.type}</text>
+          </>
+        )}
+        <Show when={props.onClose}>
+          <text fg={props.theme.textMuted} selectable={false} onMouseDown={props.onClose}> · ✕</text>
+        </Show>
+      </box>
+    </box>
+  );
 }
 
 const tui: TuiPlugin = async (api: TuiPluginApi) => {
@@ -575,20 +387,6 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   const [subagentsSectionEnabled, setSubagentsSectionEnabled] = createSignal(
     api.kv.get<boolean>(SUBAGENTS_SECTION_ENABLED_KV_KEY, true) !== false,
   );
-  const [focusMode, setFocusMode] = createSignal(
-    api.kv.get<boolean>(FOCUS_MODE_KEY, false) !== false,
-  );
-
-  const ALL_STATUSES: ChildStatus[] = ["running", "done", "error", "blocked", "waiting", "stopped"];
-  const defaultFilters = new Set<ChildStatus>(ALL_STATUSES);
-  const storedFilters = api.kv.get<ChildStatus[]>(STATUS_FILTERS_KEY);
-  if (storedFilters && Array.isArray(storedFilters)) {
-    defaultFilters.clear();
-    for (const s of storedFilters) {
-      if (ALL_STATUSES.includes(s)) defaultFilters.add(s);
-    }
-  }
-  const [statusFilters, setStatusFilters] = createSignal<Set<ChildStatus>>(defaultFilters);
   let disposed = false;
 
   const setSubagentsExpandedPreference = (expanded: boolean): void => {
@@ -599,16 +397,6 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   const setSubagentsSectionEnabledPreference = (enabled: boolean): void => {
     setSubagentsSectionEnabled(enabled);
     api.kv.set(SUBAGENTS_SECTION_ENABLED_KV_KEY, enabled);
-  };
-
-  const setFocusModePreference = (enabled: boolean): void => {
-    setFocusMode(enabled);
-    api.kv.set(FOCUS_MODE_KEY, enabled);
-  };
-
-  const setStatusFiltersPreference = (filters: Set<ChildStatus>): void => {
-    setStatusFilters(filters);
-    api.kv.set(STATUS_FILTERS_KEY, [...filters]);
   };
 
   const commandDispose = api.command.register(() => [
@@ -629,15 +417,6 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       description: "Expand or collapse the subagent list",
       category: "Subagents",
       onSelect: () => setSubagentsExpandedPreference(!subagentsExpanded()),
-    },
-    {
-      title: focusMode()
-        ? "Subagents: Disable focus mode"
-        : "Subagents: Enable focus mode",
-      value: "subagent-statusline.toggle-focus-mode",
-      description: "Show detail panel for focused subagent",
-      category: "Subagents",
-      onSelect: () => setFocusModePreference(!focusMode()),
     },
   ]);
 
@@ -696,6 +475,9 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     api.event.on("message.part.updated", applyEvent),
   ];
 
+  // View model for focus/detail UX — re-created when subagentsSectionEnabled toggles
+  const vm = createTuiViewModel(state, nowMs, true);
+
   api.lifecycle.onDispose(() => {
     disposed = true;
     clearInterval(tick);
@@ -723,10 +505,10 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
               onToggleExpanded={() => setSubagentsExpandedPreference(!subagentsExpanded())}
               sidebarWidth={() => resolveSidebarWidth(ctx)}
               theme={ctx.theme.current}
-              focusMode={focusMode}
-              onToggleFocusMode={() => setFocusModePreference(!focusMode())}
-              statusFilters={statusFilters}
-              onStatusFiltersChange={setStatusFiltersPreference}
+              focusedId={vm.focusedId}
+              selectOnly={vm.selectOnly}
+              clearSelection={vm.clearSelection}
+              focusedDetail={vm.focusedDetail}
             />
           </Show>
         );

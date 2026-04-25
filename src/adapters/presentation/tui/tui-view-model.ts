@@ -329,7 +329,7 @@ export function buildHierarchy(
   return result;
 }
 
-function formatDetail(child: ChildSessionState, nowMs: number): ChildDetail {
+export function formatDetail(child: ChildSessionState, nowMs: number): ChildDetail {
   const ms = elapsedMs(child, nowMs);
   const lastEvent = child.eventLog.length > 0 ? child.eventLog[child.eventLog.length - 1] : undefined;
   return {
@@ -397,7 +397,7 @@ export function createTuiViewModel(
   };
 
   const clearSelection = (): void => {
-    setSelectedIds(new Set());
+    setSelectedIds(new Set<string>());
     setFocusedId(undefined);
   };
 
